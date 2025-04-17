@@ -144,6 +144,14 @@
             gap: 10px;
             align-items: center;
         }
+        .heartbeat-active {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 0.6; }
+            50% { opacity: 1; }
+            100% { opacity: 0.6; }
+        }
     </style>
 </head>
 <body>
@@ -157,8 +165,8 @@
             <div class="col-md-3">
                 <div class="card h-100">
                     <div class="card-body text-center">
-                        <h5 class="card-title">Total Devices</h5>
-                        <p class="summary-stats" id="totalDevices">0</p>
+                        <h5 class="card-title">Connected Devices</h5>
+                        <p class="summary-stats" id="connectedDevices">0</p>
                     </div>
                 </div>
             </div>
@@ -188,6 +196,26 @@
             </div>
         </div>
         
+        <!-- Subscriptions Stats -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Active Subscriptions</h5>
+                        <button id="heartbeatBtn" class="btn btn-sm btn-primary">Send Heartbeat</button>
+                    </div>
+                    <div class="card-body">
+                        <div class="row" id="topicsContainer">
+                            <!-- Topics will be populated here dynamically -->
+                            <div class="col-12 text-center py-3">
+                                <p>Subscription data will appear here once connected...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <!-- Devices Row -->
         <h3 class="mb-3">Device Status</h3>
         <div class="row mb-4" id="devicesContainer">
@@ -198,12 +226,6 @@
                 </div>
                 <p class="mt-2">Connecting to MQTT broker...</p>
             </div>
-        </div>
-        
-        <!-- Topic Subscriptions -->
-        <h3 class="mb-3">Topic Subscriptions</h3>
-        <div class="row mb-4" id="topicsContainer">
-            <!-- Topics will be populated here dynamically -->
         </div>
         
         <!-- Activity Log -->
@@ -254,14 +276,17 @@
         // Global state
         const state = {
             devices: {},
-            topics: {
-                'esp32/disable/+': { subscribers: 0, messages: 0 },
-                'esp32/enable/+': { subscribers: 0, messages: 0 },
-                'esp32/status/+': { subscribers: 0, messages: 0 },
-                'esp32/permissions_result/+': { subscribers: 0, messages: 0 }
+            clientsMap: {}, // Maps client IDs to device types
+            topicSubscriptions: {
+                'esp32/disable/+': { subscribers: [], count: 0, messages: 0 },
+                'esp32/enable/+': { subscribers: [], count: 0, messages: 0 },
+                'esp32/status/+': { subscribers: [], count: 0, messages: 0 },
+                'esp32/permissions_result/+': { subscribers: [], count: 0, messages: 0 },
+                'esp32/heartbeat': { subscribers: [], count: 0, messages: 0 }
             },
             mqttClient: null,
-            isConnected: false
+            isConnected: false,
+            dashboardClientId: '',
         };
 
         // Initialize timestamp
@@ -273,8 +298,9 @@
             const totalDevices = Object.keys(state.devices).length;
             const enabledDevices = Object.values(state.devices).filter(d => d.status === 'enabled').length;
             const disabledDevices = Object.values(state.devices).filter(d => d.status === 'disabled').length;
+            const connectedDevices = Object.values(state.devices).filter(d => d.online).length;
             
-            document.getElementById('totalDevices').textContent = totalDevices;
+            document.getElementById('connectedDevices').textContent = connectedDevices;
             document.getElementById('enabledDevices').textContent = enabledDevices;
             document.getElementById('disabledDevices').textContent = disabledDevices;
             
@@ -288,46 +314,60 @@
                         <p>No devices detected yet. Waiting for device status messages...</p>
                     </div>
                 `;
-                return;
-            }
-            
-            for (const [deviceId, device] of Object.entries(state.devices)) {
-                const statusClass = device.status === 'enabled' ? 'status-enabled' : 
-                                    device.status === 'disabled' ? 'status-disabled' : 'status-unknown';
-                const statusIcon = device.status === 'enabled' ? '✓' : 
-                                  device.status === 'disabled' ? '✗' : '?';
-                
-                const deviceCard = document.createElement('div');
-                deviceCard.className = 'col-md-4 mb-3';
-                deviceCard.innerHTML = `
-                    <div class="card device-card h-100 ${statusClass}" id="device-${deviceId}">
-                        <div class="card-body">
-                            <h5 class="card-title">${deviceId}</h5>
-                            <div class="text-center mb-3">
-                                <span class="permission-icon">${statusIcon}</span>
-                                <h4>${device.status.charAt(0).toUpperCase() + device.status.slice(1)}</h4>
+            } else {
+                for (const [deviceId, device] of Object.entries(state.devices)) {
+                    const statusClass = device.status === 'enabled' ? 'status-enabled' : 
+                                       device.status === 'disabled' ? 'status-disabled' : 'status-unknown';
+                    const statusIcon = device.status === 'enabled' ? '✓' : 
+                                      device.status === 'disabled' ? '✗' : '?';
+                    const onlineStatus = device.online ? 'Online' : 'Offline';
+                    const onlineStatusClass = device.online ? 'text-success' : 'text-secondary';
+                    
+                    const deviceCard = document.createElement('div');
+                    deviceCard.className = 'col-md-4 mb-3';
+                    deviceCard.innerHTML = `
+                        <div class="card device-card h-100 ${statusClass}" id="device-${deviceId}">
+                            <div class="card-body">
+                                <h5 class="card-title">${deviceId}</h5>
+                                <div class="text-center mb-3">
+                                    <span class="permission-icon">${statusIcon}</span>
+                                    <h4>${device.status.charAt(0).toUpperCase() + device.status.slice(1)}</h4>
+                                    <p class="mb-2 ${onlineStatusClass}"><strong>${onlineStatus}</strong></p>
+                                </div>
+                                <p class="mb-1"><strong>Last Updated:</strong> ${device.lastUpdated}</p>
+                                <p class="mb-0"><strong>Last Action:</strong> ${device.lastAction || 'None'}</p>
                             </div>
-                            <p class="mb-1"><strong>Last Updated:</strong> ${device.lastUpdated}</p>
-                            <p class="mb-0"><strong>Last Action:</strong> ${device.lastAction || 'None'}</p>
                         </div>
-                    </div>
-                `;
-                devicesContainer.appendChild(deviceCard);
+                    `;
+                    devicesContainer.appendChild(deviceCard);
+                }
             }
             
             // Update topics container
             const topicsContainer = document.getElementById('topicsContainer');
             topicsContainer.innerHTML = '';
             
-            for (const [topic, data] of Object.entries(state.topics)) {
+            for (const [topic, data] of Object.entries(state.topicSubscriptions)) {
                 const topicCard = document.createElement('div');
                 topicCard.className = 'col-md-6 mb-3';
+                
+                let subscribersList = '';
+                if (data.subscribers.length > 0) {
+                    subscribersList = '<ul class="mb-0 mt-2">';
+                    data.subscribers.forEach(sub => {
+                        subscribersList += `<li>${sub} ${sub === state.dashboardClientId ? '(This Dashboard)' : ''}</li>`;
+                    });
+                    subscribersList += '</ul>';
+                }
+                
                 topicCard.innerHTML = `
                     <div class="card topic-card h-100">
                         <div class="card-body">
-                            <span class="subscribers-badge" title="Active Subscribers">${data.subscribers}</span>
+                            <span class="subscribers-badge" title="Active Subscribers">${data.count}</span>
                             <h5 class="card-title">${topic}</h5>
-                            <p class="mb-0"><strong>Message Count:</strong> ${data.messages}</p>
+                            <p class="mb-2"><strong>Message Count:</strong> ${data.messages}</p>
+                            <p class="mb-1"><strong>Subscribers:</strong></p>
+                            ${subscribersList}
                         </div>
                     </div>
                 `;
@@ -370,6 +410,79 @@
             }
         }
 
+        // Function to send a heartbeat message to detect subscribers
+        function sendHeartbeat() {
+            if (!state.isConnected || !state.mqttClient) {
+                addActivityLog('Cannot send heartbeat: Not connected to MQTT broker', 'error');
+                return;
+            }
+            
+            const heartbeatBtn = document.getElementById('heartbeatBtn');
+            heartbeatBtn.classList.add('heartbeat-active');
+            heartbeatBtn.disabled = true;
+            
+            // Prepare heartbeat message with dashboard client ID
+            const message = new Paho.MQTT.Message(JSON.stringify({
+                source: state.dashboardClientId,
+                timestamp: new Date().toISOString(),
+                type: 'heartbeat'
+            }));
+            message.destinationName = 'esp32/heartbeat';
+            message.qos = 1;
+            message.retained = false;
+            
+            try {
+                state.mqttClient.send(message);
+                addActivityLog('Sent heartbeat to detect active subscribers', 'success');
+                
+                // Reset button after 3 seconds
+                setTimeout(() => {
+                    heartbeatBtn.classList.remove('heartbeat-active');
+                    heartbeatBtn.disabled = false;
+                }, 3000);
+            } catch (error) {
+                console.error('Error sending heartbeat:', error);
+                addActivityLog(`Failed to send heartbeat: ${error.message}`, 'error');
+                heartbeatBtn.classList.remove('heartbeat-active');
+                heartbeatBtn.disabled = false;
+            }
+        }
+
+        // Function to process a heartbeat response
+        function processHeartbeatResponse(payload, sender) {
+            try {
+                const data = JSON.parse(payload);
+                
+                // Skip our own heartbeats
+                if (data.source === state.dashboardClientId) return;
+                
+                // Record the client as a subscriber to the heartbeat topic
+                if (!state.topicSubscriptions['esp32/heartbeat'].subscribers.includes(data.source)) {
+                    state.topicSubscriptions['esp32/heartbeat'].subscribers.push(data.source);
+                    state.topicSubscriptions['esp32/heartbeat'].count = state.topicSubscriptions['esp32/heartbeat'].subscribers.length;
+                    
+                    // Log the new subscriber
+                    addActivityLog(`Detected new subscriber: ${data.source}`, 'success');
+                    
+                    // Update the dashboard
+                    updateDashboard();
+                }
+                
+                // Remember the client type if included
+                if (data.deviceType) {
+                    state.clientsMap[data.source] = data.deviceType;
+                }
+                
+                // Update last seen time if we're tracking this device
+                if (state.devices[data.source]) {
+                    state.devices[data.source].lastSeen = new Date().toLocaleString();
+                    state.devices[data.source].online = true;
+                }
+            } catch (error) {
+                console.error('Error processing heartbeat response:', error);
+            }
+        }
+
         // MQTT connection and message handling
         function setupMQTT() {
             const host = document.getElementById('mqttHost').value;
@@ -384,6 +497,7 @@
             
             // Generate a random client ID
             const clientId = 'dashboard_' + Math.random().toString(16).substr(2, 8);
+            state.dashboardClientId = clientId;
             
             try {
                 // Create MQTT client
@@ -430,8 +544,18 @@
             state.mqttClient.subscribe('esp32/enable/+');
             state.mqttClient.subscribe('esp32/status/+');
             state.mqttClient.subscribe('esp32/permissions_result/+');
-            state.mqttClient.subscribe('$SYS/broker/clients/+');
-            state.mqttClient.subscribe('$SYS/broker/subscriptions/count');
+            state.mqttClient.subscribe('esp32/heartbeat');
+            
+            // Register ourselves as a subscriber to all topics we just subscribed to
+            Object.keys(state.topicSubscriptions).forEach(topic => {
+                if (!state.topicSubscriptions[topic].subscribers.includes(state.dashboardClientId)) {
+                    state.topicSubscriptions[topic].subscribers.push(state.dashboardClientId);
+                    state.topicSubscriptions[topic].count = state.topicSubscriptions[topic].subscribers.length;
+                }
+            });
+            
+            // Send an initial heartbeat to notify others of our presence
+            sendHeartbeat();
             
             addActivityLog('Subscribed to device topics', 'success');
             
@@ -472,14 +596,14 @@
             
             console.log(`Message received on ${topic}: ${payload}`);
             
-            // Handle system messages about subscriptions
-            if (topic === '$SYS/broker/subscriptions/count') {
-                // Total subscription count - not per topic
-                return;
-            }
-            
-            if (topic.startsWith('$SYS/broker/clients/')) {
-                // Client connection information
+            // Handle heartbeat messages
+            if (topic === 'esp32/heartbeat') {
+                processHeartbeatResponse(payload, message.payloadString);
+                
+                // Increment message count
+                state.topicSubscriptions[topic].messages++;
+                
+                // Early return since we handled this specially
                 return;
             }
             
@@ -489,8 +613,8 @@
             
             // Increment message count for the topic pattern
             const topicPattern = topicParts.slice(0, 2).join('/') + '/+';
-            if (state.topics[topicPattern]) {
-                state.topics[topicPattern].messages++;
+            if (state.topicSubscriptions[topicPattern]) {
+                state.topicSubscriptions[topicPattern].messages++;
             }
             
             // Extract device ID from the topic
@@ -506,7 +630,9 @@
                 state.devices[deviceId] = {
                     status: 'unknown',
                     lastUpdated: new Date().toLocaleString(),
-                    lastAction: null
+                    lastAction: null,
+                    online: true,
+                    lastSeen: new Date().toLocaleString()
                 };
             }
             
@@ -533,9 +659,11 @@
                     addActivityLog(`Device ${deviceId}: Status update - Enabled`);
                 }
                 else if (payload === 'online') {
+                    state.devices[deviceId].online = true;
                     addActivityLog(`Device ${deviceId}: Connected to MQTT broker`, 'success');
                 }
                 else if (payload === 'offline') {
+                    state.devices[deviceId].online = false;
                     addActivityLog(`Device ${deviceId}: Disconnected from MQTT broker`, 'warning');
                 }
             }
@@ -561,6 +689,7 @@
             
             // Update last updated timestamp
             state.devices[deviceId].lastUpdated = new Date().toLocaleString();
+            state.devices[deviceId].lastSeen = new Date().toLocaleString();
             
             // Update dashboard
             updateDashboard();
@@ -569,21 +698,11 @@
             highlightDeviceCard(deviceId);
         }
 
-        // Setup mock subscription numbers for demonstration
-        function setupMockSubscribers() {
-            // In a real implementation, you would get this data from the MQTT broker's $SYS topics
-            for (const topic in state.topics) {
-                state.topics[topic].subscribers = Math.floor(Math.random() * 5) + 1;
-            }
-        }
-
         // Initialize the dashboard
         function initDashboard() {
             // Set up event listeners
             document.getElementById('connectBtn').addEventListener('click', setupMQTT);
-            
-            // Setup mock data for demonstration
-            setupMockSubscribers();
+            document.getElementById('heartbeatBtn').addEventListener('click', sendHeartbeat);
             
             // Update the dashboard initially
             updateDashboard();
