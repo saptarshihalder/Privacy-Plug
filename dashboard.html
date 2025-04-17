@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Device Permissions Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f5f5f5;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding-bottom: 40px;
+        }
+        .dashboard-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .card {
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            transition: transform 0.2s ease;
+        }
+        .card:hover {
+            transform: translateY(-3px);
+        }
+        .status-enabled {
+            background-color: #d4edda;
+            color: #155724;
+            border-color: #c3e6cb;
+        }
+        .status-disabled {
+            background-color: #f8d7da;
+            color: #721c24;
+            border-color: #f5c6cb;
+        }
+        .status-unknown {
+            background-color: #fff3cd;
+            color: #856404;
+            border-color: #ffeeba;
+        }
+        .permission-icon {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+        .timestamp {
+            font-size: 0.8rem;
+            color: #6c757d;
+        }
+        .device-header {
+            border-bottom: 1px solid #dee2e6;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        .connection-status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .connecting {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        .activity-item {
+            padding: 10px;
+            border-bottom: 1px solid #dee2e6;
+            animation: fadeIn 0.5s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .permission-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        #activityLog {
+            height: 300px;
+            overflow-y: auto;
+        }
+        .summary-stats {
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+        .device-card {
+            transition: all 0.3s ease;
+        }
+        .device-card.updated {
+            animation: highlight 2s ease;
+        }
+        @keyframes highlight {
+            0% { box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.5); }
+            100% { box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+        }
+        .subscribers-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: #007bff;
+            color: white;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+        .topic-card {
+            position: relative;
+        }
+        .config-panel {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background-color: #343a40;
+            color: white;
+            padding: 10px;
+            z-index: 1000;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .config-inputs {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="connection-status disconnected" id="connectionStatus">Disconnected</div>
+    
+    <div class="dashboard-container">
+        <h1 class="text-center mb-4">Device Permissions Dashboard</h1>
+        
+        <!-- Summary Row -->
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Total Devices</h5>
+                        <p class="summary-stats" id="totalDevices">0</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Enabled Permissions</h5>
+                        <p class="summary-stats" id="enabledDevices">0</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Disabled Permissions</h5>
+                        <p class="summary-stats" id="disabledDevices">0</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Last Token Scan</h5>
+                        <p class="summary-stats" id="lastTokenScan">None</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Devices Row -->
+        <h3 class="mb-3">Device Status</h3>
+        <div class="row mb-4" id="devicesContainer">
+            <!-- Devices will be populated here dynamically -->
+            <div class="col-12 text-center py-5">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2">Connecting to MQTT broker...</p>
+            </div>
+        </div>
+        
+        <!-- Topic Subscriptions -->
+        <h3 class="mb-3">Topic Subscriptions</h3>
+        <div class="row mb-4" id="topicsContainer">
+            <!-- Topics will be populated here dynamically -->
+        </div>
+        
+        <!-- Activity Log -->
+        <div class="row">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Activity Log</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="activityLog" class="recent-activity">
+                            <!-- Activity items will be populated here dynamically -->
+                            <div class="activity-item">
+                                <p class="mb-0">Dashboard initialized, waiting for MQTT connection...</p>
+                                <small class="timestamp" id="initTimestamp"></small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Configuration Panel -->
+    <div class="config-panel">
+        <div class="config-inputs">
+            <div class="form-group mb-0">
+                <label for="mqttHost">MQTT Host:</label>
+                <input type="text" class="form-control form-control-sm" id="mqttHost" value="34907036e79f49899c46b6fec77e7f23.s1.eu.hivemq.cloud">
+            </div>
+            <div class="form-group mb-0">
+                <label for="mqttPort">Port:</label>
+                <input type="number" class="form-control form-control-sm" id="mqttPort" value="8884">
+            </div>
+            <div class="form-group mb-0">
+                <label for="mqttUsername">Username:</label>
+                <input type="text" class="form-control form-control-sm" id="mqttUsername" value="RFID_1">
+            </div>
+            <div class="form-group mb-0">
+                <label for="mqttPassword">Password:</label>
+                <input type="password" class="form-control form-control-sm" id="mqttPassword" value="RFID_rfid_1">
+            </div>
+        </div>
+        <button class="btn btn-primary" id="connectBtn">Connect</button>
+    </div>
+
+    <script>
+        // Global state
+        const state = {
+            devices: {},
+            topics: {
+                'esp32/disable/+': { subscribers: 0, messages: 0 },
+                'esp32/enable/+': { subscribers: 0, messages: 0 },
+                'esp32/status/+': { subscribers: 0, messages: 0 },
+                'esp32/permissions_result/+': { subscribers: 0, messages: 0 }
+            },
+            mqttClient: null,
+            isConnected: false
+        };
+
+        // Initialize timestamp
+        document.getElementById('initTimestamp').textContent = new Date().toLocaleString();
+
+        // Function to update the dashboard UI
+        function updateDashboard() {
+            // Update summary stats
+            const totalDevices = Object.keys(state.devices).length;
+            const enabledDevices = Object.values(state.devices).filter(d => d.status === 'enabled').length;
+            const disabledDevices = Object.values(state.devices).filter(d => d.status === 'disabled').length;
+            
+            document.getElementById('totalDevices').textContent = totalDevices;
+            document.getElementById('enabledDevices').textContent = enabledDevices;
+            document.getElementById('disabledDevices').textContent = disabledDevices;
+            
+            // Update devices container
+            const devicesContainer = document.getElementById('devicesContainer');
+            devicesContainer.innerHTML = '';
+            
+            if (totalDevices === 0) {
+                devicesContainer.innerHTML = `
+                    <div class="col-12 text-center py-3">
+                        <p>No devices detected yet. Waiting for device status messages...</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            for (const [deviceId, device] of Object.entries(state.devices)) {
+                const statusClass = device.status === 'enabled' ? 'status-enabled' : 
+                                    device.status === 'disabled' ? 'status-disabled' : 'status-unknown';
+                const statusIcon = device.status === 'enabled' ? '✓' : 
+                                  device.status === 'disabled' ? '✗' : '?';
+                
+                const deviceCard = document.createElement('div');
+                deviceCard.className = 'col-md-4 mb-3';
+                deviceCard.innerHTML = `
+                    <div class="card device-card h-100 ${statusClass}" id="device-${deviceId}">
+                        <div class="card-body">
+                            <h5 class="card-title">${deviceId}</h5>
+                            <div class="text-center mb-3">
+                                <span class="permission-icon">${statusIcon}</span>
+                                <h4>${device.status.charAt(0).toUpperCase() + device.status.slice(1)}</h4>
+                            </div>
+                            <p class="mb-1"><strong>Last Updated:</strong> ${device.lastUpdated}</p>
+                            <p class="mb-0"><strong>Last Action:</strong> ${device.lastAction || 'None'}</p>
+                        </div>
+                    </div>
+                `;
+                devicesContainer.appendChild(deviceCard);
+            }
+            
+            // Update topics container
+            const topicsContainer = document.getElementById('topicsContainer');
+            topicsContainer.innerHTML = '';
+            
+            for (const [topic, data] of Object.entries(state.topics)) {
+                const topicCard = document.createElement('div');
+                topicCard.className = 'col-md-6 mb-3';
+                topicCard.innerHTML = `
+                    <div class="card topic-card h-100">
+                        <div class="card-body">
+                            <span class="subscribers-badge" title="Active Subscribers">${data.subscribers}</span>
+                            <h5 class="card-title">${topic}</h5>
+                            <p class="mb-0"><strong>Message Count:</strong> ${data.messages}</p>
+                        </div>
+                    </div>
+                `;
+                topicsContainer.appendChild(topicCard);
+            }
+        }
+
+        // Function to add an activity log entry
+        function addActivityLog(message, type = 'info') {
+            const activityLog = document.getElementById('activityLog');
+            const timestamp = new Date().toLocaleString();
+            
+            const logItem = document.createElement('div');
+            logItem.className = 'activity-item';
+            
+            if (type === 'error') {
+                logItem.style.color = '#721c24';
+            } else if (type === 'success') {
+                logItem.style.color = '#155724';
+            } else if (type === 'warning') {
+                logItem.style.color = '#856404';
+            }
+            
+            logItem.innerHTML = `
+                <p class="mb-0">${message}</p>
+                <small class="timestamp">${timestamp}</small>
+            `;
+            
+            activityLog.insertBefore(logItem, activityLog.firstChild);
+        }
+
+        // Function to highlight a device card after update
+        function highlightDeviceCard(deviceId) {
+            const deviceCard = document.getElementById(`device-${deviceId}`);
+            if (deviceCard) {
+                deviceCard.classList.add('updated');
+                setTimeout(() => {
+                    deviceCard.classList.remove('updated');
+                }, 2000);
+            }
+        }
+
+        // MQTT connection and message handling
+        function setupMQTT() {
+            const host = document.getElementById('mqttHost').value;
+            const port = parseInt(document.getElementById('mqttPort').value);
+            const username = document.getElementById('mqttUsername').value;
+            const password = document.getElementById('mqttPassword').value;
+            
+            // Update connection status UI
+            const connectionStatus = document.getElementById('connectionStatus');
+            connectionStatus.className = 'connection-status connecting';
+            connectionStatus.textContent = 'Connecting...';
+            
+            // Generate a random client ID
+            const clientId = 'dashboard_' + Math.random().toString(16).substr(2, 8);
+            
+            try {
+                // Create MQTT client
+                const client = new Paho.MQTT.Client(host, port, clientId);
+                
+                // Set callback handlers
+                client.onConnectionLost = onConnectionLost;
+                client.onMessageArrived = onMessageArrived;
+                
+                // Connect options
+                const options = {
+                    useSSL: true,
+                    userName: username,
+                    password: password,
+                    onSuccess: onConnect,
+                    onFailure: onFailure,
+                    timeout: 3
+                };
+                
+                // Connect
+                client.connect(options);
+                state.mqttClient = client;
+                
+                addActivityLog(`Connecting to MQTT broker at ${host}:${port}...`);
+            } catch (error) {
+                console.error('Error setting up MQTT:', error);
+                connectionStatus.className = 'connection-status disconnected';
+                connectionStatus.textContent = 'Connection Failed';
+                addActivityLog(`Failed to setup MQTT client: ${error.message}`, 'error');
+            }
+        }
+
+        // MQTT connection success callback
+        function onConnect() {
+            state.isConnected = true;
+            const connectionStatus = document.getElementById('connectionStatus');
+            connectionStatus.className = 'connection-status connected';
+            connectionStatus.textContent = 'Connected';
+            
+            addActivityLog('Connected to MQTT broker successfully!', 'success');
+            
+            // Subscribe to topics
+            state.mqttClient.subscribe('esp32/disable/+');
+            state.mqttClient.subscribe('esp32/enable/+');
+            state.mqttClient.subscribe('esp32/status/+');
+            state.mqttClient.subscribe('esp32/permissions_result/+');
+            state.mqttClient.subscribe('$SYS/broker/clients/+');
+            state.mqttClient.subscribe('$SYS/broker/subscriptions/count');
+            
+            addActivityLog('Subscribed to device topics', 'success');
+            
+            // Initial dashboard update
+            updateDashboard();
+        }
+
+        // MQTT connection failure callback
+        function onFailure(error) {
+            state.isConnected = false;
+            const connectionStatus = document.getElementById('connectionStatus');
+            connectionStatus.className = 'connection-status disconnected';
+            connectionStatus.textContent = 'Connection Failed';
+            
+            addActivityLog(`Failed to connect to MQTT broker: ${error.errorMessage}`, 'error');
+            console.error('Connection failed:', error);
+        }
+
+        // MQTT connection lost callback
+        function onConnectionLost(responseObject) {
+            state.isConnected = false;
+            const connectionStatus = document.getElementById('connectionStatus');
+            connectionStatus.className = 'connection-status disconnected';
+            connectionStatus.textContent = 'Disconnected';
+            
+            if (responseObject.errorCode !== 0) {
+                addActivityLog(`Connection lost: ${responseObject.errorMessage}`, 'error');
+                console.error('Connection lost:', responseObject.errorMessage);
+            } else {
+                addActivityLog('Disconnected from MQTT broker');
+            }
+        }
+
+        // MQTT message arrived callback
+        function onMessageArrived(message) {
+            const topic = message.destinationName;
+            const payload = message.payloadString;
+            
+            console.log(`Message received on ${topic}: ${payload}`);
+            
+            // Handle system messages about subscriptions
+            if (topic === '$SYS/broker/subscriptions/count') {
+                // Total subscription count - not per topic
+                return;
+            }
+            
+            if (topic.startsWith('$SYS/broker/clients/')) {
+                // Client connection information
+                return;
+            }
+            
+            // Handle device-specific topics
+            const topicParts = topic.split('/');
+            const topicType = topicParts[1]; // 'disable', 'enable', 'status', etc.
+            
+            // Increment message count for the topic pattern
+            const topicPattern = topicParts.slice(0, 2).join('/') + '/+';
+            if (state.topics[topicPattern]) {
+                state.topics[topicPattern].messages++;
+            }
+            
+            // Extract device ID from the topic
+            let deviceId = null;
+            if (topicParts.length > 2) {
+                deviceId = topicParts[2];
+            }
+            
+            if (!deviceId) return;
+            
+            // Initialize device if it doesn't exist
+            if (!state.devices[deviceId]) {
+                state.devices[deviceId] = {
+                    status: 'unknown',
+                    lastUpdated: new Date().toLocaleString(),
+                    lastAction: null
+                };
+            }
+            
+            // Update device status based on topic and payload
+            if (topic.includes('/disable/') && payload === 'disable_permissions') {
+                state.devices[deviceId].status = 'disabled';
+                state.devices[deviceId].lastAction = 'Permissions Disabled';
+                document.getElementById('lastTokenScan').textContent = 'Disable';
+                addActivityLog(`Device ${deviceId}: Permissions disabled`, 'warning');
+            } 
+            else if (topic.includes('/enable/') && payload === 'enable_permissions') {
+                state.devices[deviceId].status = 'enabled';
+                state.devices[deviceId].lastAction = 'Permissions Enabled';
+                document.getElementById('lastTokenScan').textContent = 'Enable';
+                addActivityLog(`Device ${deviceId}: Permissions enabled`, 'success');
+            }
+            else if (topic.includes('/status/')) {
+                if (payload === 'permissions_disabled' || payload === 'permissions_disable_partial') {
+                    state.devices[deviceId].status = 'disabled';
+                    addActivityLog(`Device ${deviceId}: Status update - Disabled`);
+                } 
+                else if (payload === 'permissions_enabled' || payload === 'permissions_enable_partial') {
+                    state.devices[deviceId].status = 'enabled';
+                    addActivityLog(`Device ${deviceId}: Status update - Enabled`);
+                }
+                else if (payload === 'online') {
+                    addActivityLog(`Device ${deviceId}: Connected to MQTT broker`, 'success');
+                }
+                else if (payload === 'offline') {
+                    addActivityLog(`Device ${deviceId}: Disconnected from MQTT broker`, 'warning');
+                }
+            }
+            else if (topic.includes('/permissions_result/')) {
+                try {
+                    const result = JSON.parse(payload);
+                    let resultMessage = `Device ${deviceId}: `;
+                    
+                    if (result.enabled_permissions && result.enabled_permissions.length > 0) {
+                        resultMessage += `Enabled ${result.enabled_permissions.length} permissions`;
+                        state.devices[deviceId].status = 'enabled';
+                    } 
+                    else if (result.disabled_permissions && result.disabled_permissions.length > 0) {
+                        resultMessage += `Disabled ${result.disabled_permissions.length} permissions`;
+                        state.devices[deviceId].status = 'disabled';
+                    }
+                    
+                    addActivityLog(resultMessage);
+                } catch (e) {
+                    console.error('Error parsing permissions result:', e);
+                }
+            }
+            
+            // Update last updated timestamp
+            state.devices[deviceId].lastUpdated = new Date().toLocaleString();
+            
+            // Update dashboard
+            updateDashboard();
+            
+            // Highlight updated device card
+            highlightDeviceCard(deviceId);
+        }
+
+        // Setup mock subscription numbers for demonstration
+        function setupMockSubscribers() {
+            // In a real implementation, you would get this data from the MQTT broker's $SYS topics
+            for (const topic in state.topics) {
+                state.topics[topic].subscribers = Math.floor(Math.random() * 5) + 1;
+            }
+        }
+
+        // Initialize the dashboard
+        function initDashboard() {
+            // Set up event listeners
+            document.getElementById('connectBtn').addEventListener('click', setupMQTT);
+            
+            // Setup mock data for demonstration
+            setupMockSubscribers();
+            
+            // Update the dashboard initially
+            updateDashboard();
+        }
+
+        // Run initialization when the document is loaded
+        document.addEventListener('DOMContentLoaded', initDashboard);
+    </script>
+</body>
+</html>
