@@ -5,11 +5,11 @@
 #include <SPI.h>
 
 // ----- WiFi Config -----
-const char* ssid = "IQOO NET";
-const char* password = "Sapt2004";
+const char* ssid = "WIFI NAME";
+const char* password = "PASSWORD";
 
 // MQTT HiveMQ Broker over TLS
-const char* mqtt_server = "34907036e79f49899c46b6fec77e7f23.s1.eu.hivemq.cloud";
+const char* mqtt_server = "server link";
 const int mqtt_port = 8883; // SSL port
 const char* mqtt_user = "RFID_1";
 const char* mqtt_password = "RFID_rfid_1";
